@@ -31,7 +31,7 @@ jobs:
       # так подтягиваются Vulkan-Headers, SPIRV-Headers, DirectX-заголовки, dxbc-spirv, libdisplay-info.
       - name: Clone DXVK-Sarek (with submodules)
         run: |
-          git clone --recursive --branch dxvk-mali-unified https://github.com/pythonlover02/DXVK-Sarek.git src
+          git clone --recursive --branch dxvk-mali-unified https://github.com/zeyadadev/DXVK-Sarek.git src || { rm -rf src; git clone --recursive --branch v3.0.2-mali-compat-r1 https://github.com/zeyadadev/DXVK-Sarek.git src; }
           cd src
           git log -1 --format='commit %H%n%s'
           git submodule status
