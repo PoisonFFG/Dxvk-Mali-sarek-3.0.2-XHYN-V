@@ -1,0 +1,175 @@
+name: Build DXVK-Sarek 3.0.2 for XHYN V
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout (patch + meta.json)
+        uses: actions/checkout@v4
+
+      - name: Android NDK r27c
+        id: ndk
+        uses: nttld/setup-ndk@v1
+        with:
+          ndk-version: r27c
+          add-to-path: false
+
+      - name: Install build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build glslang-tools patchelf pkg-config python3-pip
+          pip install --user meson
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      # В zip с GitHub submodule пустые - поэтому клонируем с --recursive:
+      # так подтягиваются Vulkan-Headers, SPIRV-Headers, DirectX-заголовки, dxbc-spirv, libdisplay-info.
+      - name: Clone DXVK-Sarek (with submodules)
+        run: |
+          git clone --recursive --branch dxvk-mali-unified https://github.com/pythonlover02/DXVK-Sarek.git src
+          cd src
+          git log -1 --format='commit %H%n%s'
+          git submodule status
+          test -f include/vulkan/include/vulkan/vulkan.h
+          test -d include/native/directx
+          test -d subprojects/dxbc-spirv/src || test -f subprojects/dxbc-spirv/meson.build
+
+      - name: Apply XHYN patch
+        run: |
+          cd src
+          patch -p1 --dry-run < ../xhyn-sdl3-export.patch
+          patch -p1 < ../xhyn-sdl3-export.patch
+
+      # SDL3 нужны только заголовки (DXVK грузит libSDL3.so сам через dlopen)
+      - name: SDL3 headers + fake sdl3.pc
+        run: |
+          git clone --depth 1 --branch release-3.2.x https://github.com/libsdl-org/SDL.git sdl3 \
+            || git clone --depth 1 https://github.com/libsdl-org/SDL.git sdl3
+          mkdir -p "$PWD/pc"
+          printf 'prefix=%s\nincludedir=${prefix}/include\nName: sdl3\nDescription: headers only\nVersion: 3.2.0\nCflags: -I${includedir}\n' \
+            "$PWD/sdl3" > pc/sdl3.pc
+          test -f sdl3/include/SDL3/SDL_vulkan.h
+          PKG_CONFIG_LIBDIR="$PWD/pc" pkg-config --cflags sdl3
+
+      - name: Cross file (aarch64, Android API 30)
+        run: |
+          TC="${{ steps.ndk.outputs.ndk-path }}/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          cat > cross.txt <<EOF
+          [binaries]
+          c = '$TC/aarch64-linux-android30-clang'
+          cpp = '$TC/aarch64-linux-android30-clang++'
+          ar = '$TC/llvm-ar'
+          strip = '$TC/llvm-strip'
+          pkg-config = 'pkg-config'
+
+          [host_machine]
+          system = 'android'
+          cpu_family = 'aarch64'
+          cpu = 'aarch64'
+          endian = 'little'
+
+          [properties]
+          needs_exe_wrapper = true
+          pkg_config_libdir = '$PWD/pc'
+
+          [built-in options]
+          c_link_args = ['-Wl,-z,max-page-size=16384']
+          cpp_link_args = ['-Wl,-z,max-page-size=16384']
+          EOF
+          cat cross.txt
+
+      - name: Configure
+        run: |
+          cd src
+          meson setup build --cross-file ../cross.txt --buildtype release \
+            -Dnative_sdl3=enabled -Dnative_sdl2=disabled -Dnative_glfw=disabled \
+            -Denable_d3d8=false -Denable_d3d9=false -Denable_d3d10=false \
+            -Denable_d3d11=true -Denable_dxgi=true 2>&1 | tee ../configure.log
+
+      - name: Compile
+        run: |
+          cd src
+          meson compile -C build 2>&1 | tee ../build.log
+
+      - name: Show errors (if build failed)
+        if: failure()
+        run: |
+          echo "=== первые ошибки ==="
+          grep -nE "error:|FAILED|ERROR:|fatal" build.log configure.log | head -40 || true
+
+      - name: Post-process libraries
+        run: |
+          mkdir -p out
+          cp -L src/build/src/dxgi/libdxvk_dxgi.so*  out/ 2>/dev/null || true
+          cp -L src/build/src/d3d11/libdxvk_d3d11.so* out/ 2>/dev/null || true
+          ls -la out
+          cd out
+          # берём реальные файлы: оставляем только libdxvk_*.so (без .so.0 и т.п.)
+          for n in dxgi d3d11; do
+            real=$(ls libdxvk_$n.so* | head -1)
+            [ "$real" != "libdxvk_$n.so" ] && cp -L "$real" tmp_$n.so && rm -f libdxvk_$n.so* && mv tmp_$n.so libdxvk_$n.so
+          done
+          TC="${{ steps.ndk.outputs.ndk-path }}/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          "$TC/llvm-strip" --strip-unneeded libdxvk_dxgi.so libdxvk_d3d11.so
+          patchelf --set-soname libdxvk_dxgi.so  libdxvk_dxgi.so
+          patchelf --set-soname libdxvk_d3d11.so libdxvk_d3d11.so
+          for lib in libdxvk_dxgi.so libdxvk_d3d11.so; do
+            patchelf --remove-rpath "$lib"
+            for need in $(patchelf --print-needed "$lib" | grep '^libdxvk_dxgi\.so\.' || true); do
+              patchelf --replace-needed "$need" libdxvk_dxgi.so "$lib"
+            done
+          done
+          ls -la
+
+      - name: Verify (fails the job if something is wrong)
+        run: |
+          cd out
+          fail=0
+          for lib in libdxvk_dxgi.so libdxvk_d3d11.so; do
+            echo "=== $lib"
+            file "$lib"
+            readelf -dW "$lib" | grep -E "SONAME|NEEDED|RPATH|RUNPATH"
+            if readelf -dW "$lib" | grep -qE "RPATH|RUNPATH"; then echo "FAIL: RPATH/RUNPATH"; fail=1; fi
+            if ! readelf --dyn-syms -W "$lib" | grep -E " FUNC +GLOBAL +DEFAULT +[0-9]+ gtav_dxvk_query_runtime_info$"; then echo "FAIL: нет экспорта gtav_dxvk_query_runtime_info"; fail=1; fi
+            if ! strings -a "$lib" | grep -q "SDL3 WSI"; then echo "FAIL: нет SDL3 WSI драйвера"; fail=1; fi
+            if ! strings -a "$lib" | grep -qx "libSDL3.so"; then echo "FAIL: нет имени libSDL3.so"; fail=1; fi
+          done
+          readelf -dW libdxvk_d3d11.so | grep -q "NEEDED.*\[libdxvk_dxgi.so\]" || { echo "FAIL: d3d11 не зависит от libdxvk_dxgi.so"; fail=1; }
+          exit $fail
+
+      - name: Pack zip + meta.json
+        run: |
+          python3 - <<'PY'
+          import json, hashlib, zipfile
+          meta = json.load(open("meta.json"))
+          for n in ("libdxvk_dxgi.so", "libdxvk_d3d11.so"):
+              meta["libraries"][n] = hashlib.sha256(open("out/" + n, "rb").read()).hexdigest()
+          meta["source"] += " | rebuilt from dxvk-mali-unified + xhyn-sdl3-export.patch (SDL3 WSI)"
+          json.dump(meta, open("out/meta.json", "w"), indent=2)
+          with zipfile.ZipFile("dxvk-sarek-3.0.2-mali-xhyn.zip", "w", zipfile.ZIP_DEFLATED) as z:
+              for n in ("meta.json", "libdxvk_dxgi.so", "libdxvk_d3d11.so"):
+                  z.write("out/" + n, n)
+          print(open("out/meta.json").read())
+          PY
+
+      - name: Upload zip
+        uses: actions/upload-artifact@v4
+        with:
+          name: dxvk-sarek-3.0.2-mali-xhyn
+          path: dxvk-sarek-3.0.2-mali-xhyn.zip
+
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-logs
+          path: |
+            configure.log
+            build.log
+            src/build/meson-logs/meson-log.txt
+          if-no-files-found: ignore
