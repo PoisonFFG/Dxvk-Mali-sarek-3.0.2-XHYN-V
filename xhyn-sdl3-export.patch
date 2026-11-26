@@ -1,0 +1,166 @@
+diff -ruN orig/src/d3d11/d3d11.sym mod/src/d3d11/d3d11.sym
+--- orig/src/d3d11/d3d11.sym	2026-11-25 05:53:47.671680342 +0000
++++ mod/src/d3d11/d3d11.sym	2026-11-25 05:53:47.722842400 +0000
+@@ -4,6 +4,7 @@
+     D3D11CreateDevice;
+     D3D11CreateDeviceAndSwapChain;
+     D3D11On12CreateDevice;
++    gtav_dxvk_query_runtime_info;
+ 
+   local:
+     *;
+diff -ruN orig/src/d3d11/gtav_runtime_info.cpp mod/src/d3d11/gtav_runtime_info.cpp
+--- orig/src/d3d11/gtav_runtime_info.cpp	1970-01-01 00:00:00.000000000 +0000
++++ mod/src/d3d11/gtav_runtime_info.cpp	2026-11-25 05:53:47.722576017 +0000
+@@ -0,0 +1,3 @@
++// Экспорт gtav_dxvk_query_runtime_info для лаунчера XHYN V (id библиотеки = 2).
++#define GTAV_LIB_ID 2
++#include "../util/gtav_runtime_info_impl.h"
+diff -ruN orig/src/d3d11/meson.build mod/src/d3d11/meson.build
+--- orig/src/d3d11/meson.build	2026-11-25 05:53:47.672838643 +0000
++++ mod/src/d3d11/meson.build	2026-11-25 05:53:47.722982876 +0000
+@@ -59,6 +59,7 @@
+   'd3d11_view_rtv.cpp',
+   'd3d11_view_srv.cpp',
+   'd3d11_view_uav.cpp',
++  'gtav_runtime_info.cpp',
+ ]
+ 
+ d3d11_shaders = files([
+diff -ruN orig/src/dxgi/dxgi.sym mod/src/dxgi/dxgi.sym
+--- orig/src/dxgi/dxgi.sym	2026-11-25 05:53:47.674834808 +0000
++++ mod/src/dxgi/dxgi.sym	2026-11-25 05:53:47.722631266 +0000
+@@ -5,6 +5,7 @@
+     CreateDXGIFactory;
+     DXGIDeclareAdapterRemovalSupport;
+     DXGIGetDebugInterface1;
++    gtav_dxvk_query_runtime_info;
+ 
+   local:
+     *;
+diff -ruN orig/src/dxgi/gtav_runtime_info.cpp mod/src/dxgi/gtav_runtime_info.cpp
+--- orig/src/dxgi/gtav_runtime_info.cpp	1970-01-01 00:00:00.000000000 +0000
++++ mod/src/dxgi/gtav_runtime_info.cpp	2026-11-25 05:53:47.722546024 +0000
+@@ -0,0 +1,3 @@
++// Экспорт gtav_dxvk_query_runtime_info для лаунчера XHYN V (id библиотеки = 1).
++#define GTAV_LIB_ID 1
++#include "../util/gtav_runtime_info_impl.h"
+diff -ruN orig/src/dxgi/meson.build mod/src/dxgi/meson.build
+--- orig/src/dxgi/meson.build	2026-11-25 05:53:47.675141555 +0000
++++ mod/src/dxgi/meson.build	2026-11-25 05:53:47.722903849 +0000
+@@ -11,6 +11,7 @@
+   'dxgi_output.cpp',
+   'dxgi_surface.cpp',
+   'dxgi_swapchain.cpp',
++  'gtav_runtime_info.cpp',
+ ]
+ 
+ dxgi_ld_args      = []
+diff -ruN orig/src/util/gtav_runtime_info_impl.h mod/src/util/gtav_runtime_info_impl.h
+--- orig/src/util/gtav_runtime_info_impl.h	1970-01-01 00:00:00.000000000 +0000
++++ mod/src/util/gtav_runtime_info_impl.h	2026-11-25 05:53:47.722436883 +0000
+@@ -0,0 +1,44 @@
++#pragma once
++// gtav_runtime_info.cpp
++// Экспорт, который требует лаунчер XHYN V от каждой DXVK-библиотеки:
++//   int gtav_dxvk_query_runtime_info(uint32_t abi, uint32_t size, void *out);
++// Подключается из dxgi/gtav_runtime_info.cpp (id 1) и d3d11/gtav_runtime_info.cpp (id 2).
++// Если у проекта есть version-script / .sym / .def со списком экспортов,
++// добавьте туда имя gtav_dxvk_query_runtime_info.
++#include <cstdint>
++#include <cstring>
++
++#ifndef GTAV_LIB_ID
++#error "Define GTAV_LIB_ID: 1 for libdxvk_dxgi.so, 2 for libdxvk_d3d11.so"
++#endif
++
++namespace {
++  struct GtavRuntimeInfo {
++    uint32_t structSize;   // 0x60
++    uint32_t abi;          // 1
++    uint32_t libraryId;    // 1 = dxgi, 2 = d3d11
++    uint32_t flags;        // 7
++    uint32_t unknownA;     // 8  (значение как в Sarek 1.14.0)
++    uint32_t unknownB;     // 4  (значение как в Sarek 1.14.0)
++    char     runtimeHash[72]; // 64 hex-символа + нули, как в 1.14.0
++  };
++  static_assert(sizeof(GtavRuntimeInfo) == 0x60, "лаунчер ждёт ровно 0x60 байт");
++}
++
++extern "C" __attribute__((visibility("default"), used))
++int gtav_dxvk_query_runtime_info(uint32_t abi, uint32_t size, void* out) {
++  if (abi != 1 || size < sizeof(GtavRuntimeInfo) || !out)
++    return 0;
++
++  GtavRuntimeInfo info = {};
++  info.structSize = sizeof(GtavRuntimeInfo);
++  info.abi        = 1;
++  info.libraryId  = GTAV_LIB_ID;
++  info.flags      = 7;
++  info.unknownA   = 8;
++  info.unknownB   = 4;
++  std::memcpy(info.runtimeHash,
++              "0793f3a57d48fd214a65ab506d1cf53385913011ae1080ecdca1b6c3732fadf2", 64);
++  std::memcpy(out, &info, sizeof(info));
++  return 1;
++}
+diff -ruN orig/src/vulkan/vulkan_loader.cpp mod/src/vulkan/vulkan_loader.cpp
+--- orig/src/vulkan/vulkan_loader.cpp	2026-11-25 05:53:47.683095306 +0000
++++ mod/src/vulkan/vulkan_loader.cpp	2026-11-25 05:53:47.723798684 +0000
+@@ -1,4 +1,6 @@
++#include <cstdlib>
+ #include <tuple>
++#include <vector>
+ 
+ #include "vulkan_loader.h"
+ 
+@@ -20,7 +22,15 @@
+ #endif
+     }};
+ 
+-    for (auto dllName : dllNames) {
++    std::vector<const char*> candidates;
++#ifndef _WIN32
++    // XHYN V: путь к выбранному Vulkan-драйверу от лаунчера (если задан).
++    if (const char* gtavLib = std::getenv("GTAV_VULKAN_LIBRARY"); gtavLib && *gtavLib)
++      candidates.push_back(gtavLib);
++#endif
++    candidates.insert(candidates.end(), dllNames.begin(), dllNames.end());
++
++    for (auto dllName : candidates) {
+       HMODULE library = LoadLibraryA(dllName);
+ 
+       if (!library)
+diff -ruN orig/src/wsi/sdl3/wsi_platform_sdl3.cpp mod/src/wsi/sdl3/wsi_platform_sdl3.cpp
+--- orig/src/wsi/sdl3/wsi_platform_sdl3.cpp	2026-11-25 05:53:47.683721316 +0000
++++ mod/src/wsi/sdl3/wsi_platform_sdl3.cpp	2026-11-25 05:53:47.723478305 +0000
+@@ -7,6 +7,8 @@
+ 
+ #include <SDL3/SDL_vulkan.h>
+ 
++#include <cstdlib>
++
+ namespace dxvk::wsi {
+ 
+   Sdl3WsiDriver::Sdl3WsiDriver() {
+@@ -15,6 +17,8 @@
+         "SDL3.dll"
+ #elif defined(__APPLE__)
+         "libSDL3.0.dylib"
++#elif defined(__ANDROID__)
++        "libSDL3.so"
+ #else
+         "libSDL3.so.0"
+ #endif
+@@ -41,7 +45,10 @@
+   }
+ 
+   std::vector<const char *> Sdl3WsiDriver::getInstanceExtensions() {
+-    if (!SDL_Vulkan_LoadLibrary(nullptr))
++    // XHYN V: лаунчер может передать путь к выбранному Vulkan-драйверу.
++    const char* gtavVulkan = std::getenv("GTAV_VULKAN_LIBRARY");
++
++    if (!SDL_Vulkan_LoadLibrary((gtavVulkan && *gtavVulkan) ? gtavVulkan : nullptr))
+       throw DxvkError(str::format("SDL3 WSI: Failed to load Vulkan library: ", SDL_GetError()));
+ 
+     uint32_t extensionCount = 0;

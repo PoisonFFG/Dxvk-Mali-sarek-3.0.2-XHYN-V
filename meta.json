@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 1,
+  "runtimeAbi": 1,
+  "minApi": 30,
+  "name": "DXVK-Sarek-Mali",
+  "version": "3.0.2-r29",
+  "libraries": {
+    "libdxvk_dxgi.so": "233baa9653f905861cec51ee86c44edeba8d517cf145442cd85f7b8a2c95e3e1",
+    "libdxvk_d3d11.so": "7c944439d5b87b102984faab86394d5bbff45d916fd04f3de5ddfaf431ed06f2"
+  },
+  "source": "https://github.com/pythonlover02/DXVK-Sarek.git v3.0.2-r29 + Mali Compat R1"
+}
